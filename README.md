@@ -201,6 +201,13 @@ evc view --path data
 evc view --path model
 ```
 
+### Quick Test
+- Set the env variable values and
+```bash
+cd tests
+chmod +x test.sh
+./test.sh
+```
 ---
 
 ## Access lock (no public/private migration)
