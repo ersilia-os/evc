@@ -1,15 +1,14 @@
 import argparse
 
-from evc.helpers import (
+from eosvc.helpers import (
   cmd_clone,
   cmd_download,
   cmd_pull,
   cmd_push,
   cmd_upload,
   cmd_view,
-  bootstrap_env_creds,
 )
-from evc.helpers import DEFAULT_ORG, EVCError, logger
+from eosvc.helpers import DEFAULT_ORG, EVCError, logger
 
 
 def build_parser():
@@ -47,7 +46,6 @@ def build_parser():
 
 
 def main():
-  bootstrap_env_creds()
   parser = build_parser()
   args = parser.parse_args()
   try:

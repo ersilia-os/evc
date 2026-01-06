@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "evc"
+name = "eosvc"
 version = "0.1.0"
-description = "EVC (Ersilia Version Control) is a Python-based tool designed to unify code versioning with data and result management by combining Git and S3 workflows around the main branch. "
+description = "EOSVC (Ersilia Version Control) is a Python-based tool designed to unify code versioning with data and result management by combining Git and S3 workflows around the main branch. "
 readme = "README.md"
 license = {file = "LICENSE"}
 authors = [
@@ -19,6 +19,7 @@ dependencies = [
   "rich",
   "boto3",
   "ruff>=0.14.10",
+  "python-dotenv",
 ]
 
 [project.optional-dependencies]
@@ -29,7 +30,7 @@ dev = [
 ]
 
 [project.scripts]
-evc = "evc.cli:main"
+eosvc = "eosvc.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

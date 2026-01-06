@@ -1,6 +1,6 @@
-# EVC (Ersilia Version Control)
+# EOSVC (Ersilia Version Control)
 
-EVC is a small CLI that combines:
+EOSVC is a small CLI that combines:
 - **Git** for code (always on `main`)
 - **S3** for large artifacts
 
@@ -8,7 +8,7 @@ It supports both **standard repos** (eg. ersilia-analysis-template which has dat
 
 ---
 
-## What EVC stores where
+## What EOSVC stores where
 
 ### Standard repos
 Artifacts are synchronized under the S3 prefix equal to the repo name:
@@ -24,7 +24,7 @@ So a repo named `ersilia-repo` maps to:
 - `s3://<bucket>/ersilia-repo/model/<checkpoints or framework/fit>/...`
 
 ### Model repos
-If the repo is a **model repo**, EVC **only** manages:
+If the repo is a **model repo**, EOSVC **only** manages:
 
 - `model/checkpoints/`
 - `model/framework/`
@@ -34,22 +34,22 @@ Mapping example (`my-model-repo`):
 - `s3://<bucket>/my-model-repo/model/checkpoints/...`
 - `s3://<bucket>/my-model-repo/model/framework/git/...`
 
-In model repos, EVC refuses operations on `data/`, `output/`
+In model repos, EOSVC refuses operations on `data/`, `output/`
 
 ---
 
 ## Buckets and access
 
 Buckets:
-- Public bucket: `evc-public`
-- Private bucket: `evc-private`
+- Public bucket: `eosvc-public`
+- Private bucket: `eosvc-private`
 
 Access rules intended by design:
-- **Read from `evc-public` works without AWS credentials** (unsigned S3 client).
+- **Read from `eosvc-public` works without AWS credentials** (unsigned S3 client).
 - **Write to any bucket requires AWS credentials** (env vars only).
-- **Read from `evc-private` requires AWS credentials**.
+- **Read from `eosvc-private` requires AWS credentials**.
 
-> Note: For “public read without credentials” to actually work, the `evc-public` bucket policy must allow `s3:GetObject` (and if you want EVC `view` to work unauthenticated, also allow constrained `s3:ListBucket` with the expected prefixes).
+> Note: For “public read without credentials” to actually work, the `eosvc-public` bucket policy must allow `s3:GetObject` (and if you want EOSVC `view` to work unauthenticated, also allow constrained `s3:ListBucket` with the expected prefixes).
 
 ---
 
@@ -59,14 +59,14 @@ Access rules intended by design:
   pip install -e .
   ```
 ```bash
-evc --help
+eosvc --help
 ```
 
 ---
 
 ## Credentials (env vars only)
 
-EVC **will not** read AWS credentials from:
+EOSVC **will not** read AWS credentials from:
 
 * `~/.aws/credentials`
 * `~/.aws/config`
@@ -85,7 +85,7 @@ export AWS_SECRET_ACCESS_KEY="..."
 
 ## access.json (required after clone)
 
-EVC requires an `access.json` at the repo root for **all commands except `clone`**.
+EOSVC requires an `access.json` at the repo root for **all commands except `clone`**.
 
 ### Standard repo `access.json`
 
@@ -106,7 +106,7 @@ Valid values are: `"public"` or `"private"`.
 }
 ```
 
-If `access.json` is missing during `clone`, EVC will do a **git-only clone** and refuse all other operations until you add `access.json`.
+If `access.json` is missing during `clone`, EOSVC will do a **git-only clone** and refuse all other operations until you add `access.json`.
 
 ---
 
@@ -114,8 +114,8 @@ If `access.json` is missing during `clone`, EVC will do a **git-only clone** and
 
 When cloning a **standard repo**:
 
-* If **both** `data` and `output` are `private`: EVC requires credentials.
-* If **one** is private and you have **no credentials**: EVC will still proceed and download the **public** part, skipping the private part.
+* If **both** `data` and `output` are `private`: EOSVC requires credentials.
+* If **one** is private and you have **no credentials**: EOSVC will still proceed and download the **public** part, skipping the private part.
 
 Examples:
 
@@ -134,21 +134,21 @@ For **model repos**:
 ### Clone
 
 ```bash
-evc clone ersilia-repo
+eosvc clone ersilia-repo
 ```
 
 Options:
 
 ```bash
-evc clone ersilia-repo --org ersilia-os
-evc clone ersilia-repo --dest /path/to/folder
+eosvc clone ersilia-repo --org ersilia-os
+eosvc clone ersilia-repo --dest /path/to/folder
 ```
 
 ### Pull (git + refresh artifacts)
 
 ```bash
 cd ersilia-repo
-evc pull
+eosvc pull
 ```
 
 This will:
@@ -160,7 +160,7 @@ This will:
 Use `-y` to skip confirmation:
 
 ```bash
-evc pull -y
+eosvc pull -y
 ```
 
 ### Push (requires clean git)
@@ -170,10 +170,10 @@ cd ersilia-repo
 git add .
 # Also you may have some data or checkpoint change which will be uploaded to S3 storage
 git commit -m "Your commit message"
-evc push
+eosvc push
 ```
 
-`evc push` will fail if:
+`eosvc push` will fail if:
 
 * your working tree is dirty (`git status --porcelain` not empty)
 * you do not have credentials in env vars
@@ -181,24 +181,24 @@ evc push
 ### Download a path
 
 ```bash
-evc download --path data/processed/file.csv
-evc download --path output/
-evc download --path model/checkpoints/
+eosvc download --path data/processed/file.csv
+eosvc download --path output/
+eosvc download --path model/checkpoints/
 ```
 
 ### Upload a path (requires creds)
 
 ```bash
-evc upload --path output/some_folder
-evc upload --path model/checkpoints/ckpt.pt
+eosvc upload --path output/some_folder
+eosvc upload --path model/checkpoints/ckpt.pt
 ```
 
 ### View S3 tree
 
 ```bash
-evc view
-evc view --path data
-evc view --path model
+eosvc view
+eosvc view --path data
+eosvc view --path model
 ```
 
 ### Quick Test
@@ -212,33 +212,33 @@ chmod +x test.sh
 
 ## Access lock (no public/private migration)
 
-EVC creates a local lock file:
+EOSVC creates a local lock file:
 
-* `.evc/access.lock.json`
+* `.eosvc/access.lock.json`
 
-If you later change `access.json` (e.g., `public` → `private`), EVC will refuse to run.
+If you later change `access.json` (e.g., `public` → `private`), EOSVC will refuse to run.
 
 To override (not recommended), you must delete the lock file manually:
 
 ```bash
-rm .evc/access.lock.json
+rm .eosvc/access.lock.json
 ```
 
 ---
 
 ## Common troubleshooting (Might be caused by policy)
 
-### “AccessDenied” when downloading from evc-public without creds
+### “AccessDenied” when downloading from eosvc-public without creds
 
-Your bucket policy probably does not allow anonymous `ListBucket` / `GetObject` for the prefixes EVC uses.
+Your bucket policy probably does not allow anonymous `ListBucket` / `GetObject` for the prefixes EOSVC uses.
 
 If you want unauthenticated `download` to work:
 
-* allow `s3:GetObject` on `arn:aws:s3:::evc-public/*`
+* allow `s3:GetObject` on `arn:aws:s3:::eosvc-public/*`
 
 If you want unauthenticated `view` or directory downloads to work:
 
-* also allow `s3:ListBucket` on `arn:aws:s3:::evc-public`
+* also allow `s3:ListBucket` on `arn:aws:s3:::eosvc-public`
 * restrict it using `s3:prefix` conditions matching your repo layout
 
 ### “AWS credentials required (env vars only)”

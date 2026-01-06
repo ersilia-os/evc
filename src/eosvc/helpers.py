@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 import json
 import os
@@ -12,12 +13,12 @@ from botocore.exceptions import BotoCoreError, ClientError
 from loguru import logger as _loguru
 from rich.console import Console
 from rich.logging import RichHandler
-
+import dotenv
 DEFAULT_ORG = "ersilia-os"
 DEFAULT_BRANCH = "main"
 
-BUCKET_PUBLIC = "evc-public"
-BUCKET_PRIVATE = "evc-private"
+BUCKET_PUBLIC = "eosvc-public"
+BUCKET_PRIVATE = "eosvc-private"
 
 DATA_ROOT = "data"
 OUTPUT_ROOT = "output"
@@ -49,94 +50,49 @@ class Logger:
         pass
       self._sink_id = None
     if verbose:
-      handler = RichHandler(
-        rich_tracebacks=True, markup=True, show_path=False, log_time_format="%H:%M:%S"
-      )
+      handler = RichHandler(rich_tracebacks=True, markup=True, show_path=False, log_time_format="%H:%M:%S")
       self._sink_id = _loguru.add(handler, format="{message}", colorize=True)
 
-  def debug(self, msg):
-    _loguru.debug(msg)
-
-  def info(self, msg):
-    _loguru.info(msg)
-
-  def warning(self, msg):
-    _loguru.warning(msg)
-
-  def error(self, msg):
-    _loguru.error(msg)
-
-  def success(self, msg):
-    _loguru.success(msg)
+  def debug(self, msg): _loguru.debug(msg)
+  def info(self, msg): _loguru.info(msg)
+  def warning(self, msg): _loguru.warning(msg)
+  def error(self, msg): _loguru.error(msg)
+  def success(self, msg): _loguru.success(msg)
 
 
 logger = Logger()
-
-
-def bootstrap_env_creds():
-  mapping = [
-    ("EVC_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
-    ("EVC_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),
-    ("EVC_AWS_SESSION_TOKEN", "AWS_SESSION_TOKEN"),
-    ("EVC_AWS_REGION", "AWS_REGION"),
-    ("EVC_AWS_DEFAULT_REGION", "AWS_DEFAULT_REGION"),
-  ]
-  for src, dst in mapping:
-    if os.environ.get(dst):
-      continue
-    v = os.environ.get(src)
-    if v:
-      os.environ[dst] = v
-
-  os.environ.pop("AWS_PROFILE", None)
-  os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
-  os.environ["AWS_SHARED_CREDENTIALS_FILE"] = "/dev/null"
-  os.environ["AWS_CONFIG_FILE"] = "/dev/null"
 
 
 def env_region():
   return os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
 
 
-def env_creds():
-  ak = os.environ.get("AWS_ACCESS_KEY_ID")
-  sk = os.environ.get("AWS_SECRET_ACCESS_KEY")
-  st = os.environ.get("AWS_SESSION_TOKEN")
-  if not ak or not sk:
-    return None
-  return {"aws_access_key_id": ak, "aws_secret_access_key": sk, "aws_session_token": st}
-
-
-def have_creds():
-  return env_creds() is not None
-
-
-def require_creds(msg):
-  if not have_creds():
+def run(cmd, cwd=None):
+  try:
+    p = subprocess.run(
+      cmd,
+      cwd=str(cwd) if cwd else None,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.PIPE,
+      text=True,
+    )
+  except FileNotFoundError as e:
+    raise EVCError(f"Command not found: {cmd[0]}") from e
+  if p.returncode:
+    msg = f"Command failed ({p.returncode}): {' '.join(cmd)}\n"
+    if p.stdout.strip():
+      msg += f"\nSTDOUT:\n{p.stdout}"
+    if p.stderr.strip():
+      msg += f"\nSTDERR:\n{p.stderr}"
     raise EVCError(msg)
+  return p.stdout
 
 
-def s3_signed():
-  creds = env_creds()
-  if not creds:
-    raise EVCError("AWS credentials required (env vars only).")
-  kwargs = {k: v for k, v in creds.items() if v}
-  return boto3.client("s3", region_name=env_region(), **kwargs)
-
-
-def s3_unsigned():
-  return boto3.client("s3", region_name=env_region(), config=Config(signature_version=UNSIGNED))
-
-
-def s3_for_read(bucket):
-  if bucket == BUCKET_PUBLIC and not have_creds():
-    return s3_unsigned()
-  return s3_signed()
-
-
-def s3_for_write(_bucket):
-  require_creds("AWS credentials required for upload/push (env vars only).")
-  return s3_signed()
+def _read_json(p):
+  try:
+    return json.loads(p.read_text(encoding="utf-8"))
+  except Exception as e:
+    raise EVCError(f"Failed to parse {p}: {e}") from e
 
 
 def _normalize_access_value(v):
@@ -179,32 +135,145 @@ class AccessPolicy:
     )
 
 
-def run(cmd, cwd=None):
-  try:
-    p = subprocess.run(
-      cmd,
-      cwd=str(cwd) if cwd else None,
-      stdout=subprocess.PIPE,
-      stderr=subprocess.PIPE,
-      text=True,
+class CredManager:
+  def __init__(self):
+    self._session = None
+    self._source = None
+    self._caller_arn = None
+    self._checked = False
+
+  def _try_sts(self, session):
+    try:
+      sts = session.client("sts", region_name=env_region())
+      ident = sts.get_caller_identity()
+      arn = ident.get("Arn")
+      return arn or "<unknown-arn>"
+    except Exception:
+      return None
+
+  def _dotenv_paths(self, repo_dir):
+    paths = []
+    if repo_dir:
+      p = Path(repo_dir) / ".env"
+      paths.append(p)
+    paths.append(Path.cwd() / ".env")
+    seen = set()
+    out = []
+    for p in paths:
+      rp = str(p.resolve())
+      if rp not in seen:
+        seen.add(rp)
+        out.append(p)
+    return out
+
+  def _load_dotenv(self, repo_dir):
+    try:
+      from dotenv import load_dotenv
+    except Exception:
+      raise EVCError("python-dotenv is required for .env fallback. Install: pip install python-dotenv")
+
+    loaded_any = False
+    for p in self._dotenv_paths(repo_dir):
+      if p.exists():
+        load_dotenv(dotenv_path=str(p), override=True)
+        loaded_any = True
+    return loaded_any
+
+  def _has_aws_files(self):
+    home = Path.home()
+    cred = home / ".aws" / "credentials"
+    conf = home / ".aws" / "config"
+    return cred.exists() or conf.exists()
+
+  def resolve(self, repo_dir=None, require=False):
+    if self._checked:
+      if require and self._session is None:
+        raise EVCError(self._missing_message(repo_dir))
+      return self._session, self._source, self._caller_arn
+
+    os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
+
+    session = boto3.Session(region_name=env_region())
+    creds = session.get_credentials()
+    if creds:
+      arn = self._try_sts(session)
+      if arn:
+        self._session = session
+        self._source = "aws-default-chain (env and/or ~/.aws)"
+        self._caller_arn = arn
+        self._checked = True
+        return self._session, self._source, self._caller_arn
+      logger.warning("AWS credentials found (env and/or ~/.aws) but validation failed (sts:GetCallerIdentity). Trying .env fallback.")
+    else:
+      if self._has_aws_files():
+        logger.warning("Found ~/.aws credentials/config files but boto3 did not resolve credentials. Trying .env fallback.")
+      else:
+        logger.warning("No AWS credentials found in env or ~/.aws. Trying .env fallback.")
+
+    loaded = self._load_dotenv(repo_dir)
+    if loaded:
+      session2 = boto3.Session(region_name=env_region())
+      creds2 = session2.get_credentials()
+      if creds2:
+        arn2 = self._try_sts(session2)
+        if arn2:
+          self._session = session2
+          self._source = ".env (python-dotenv)"
+          self._caller_arn = arn2
+          self._checked = True
+          return self._session, self._source, self._caller_arn
+        logger.warning("Loaded .env but credentials still failed validation (sts:GetCallerIdentity).")
+      else:
+        logger.warning("Loaded .env but boto3 still did not resolve credentials.")
+    else:
+      logger.warning("No .env file found for fallback.")
+
+    self._session = None
+    self._source = None
+    self._caller_arn = None
+    self._checked = True
+
+    if require:
+      raise EVCError(self._missing_message(repo_dir))
+    return None, None, None
+
+  def _missing_message(self, repo_dir):
+    env_hint = (
+      "Set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (and optional AWS_SESSION_TOKEN), "
+      "or configure AWS CLI (aws configure), or add a .env file."
     )
-  except FileNotFoundError as e:
-    raise EVCError(f"Command not found: {cmd[0]}") from e
-  if p.returncode:
-    msg = f"Command failed ({p.returncode}): {' '.join(cmd)}\n"
-    if p.stdout.strip():
-      msg += f"\nSTDOUT:\n{p.stdout}"
-    if p.stderr.strip():
-      msg += f"\nSTDERR:\n{p.stderr}"
-    raise EVCError(msg)
-  return p.stdout
+    searched = [str(p) for p in self._dotenv_paths(repo_dir)]
+    return (
+      "AWS credentials are missing or invalid.\n"
+      f"- Checked: env and ~/.aws\n"
+      f"- Checked .env paths: {', '.join(searched)}\n"
+      f"- Fix: {env_hint}"
+    )
 
 
-def _read_json(p):
-  try:
-    return json.loads(p.read_text(encoding="utf-8"))
-  except Exception as e:
-    raise EVCError(f"Failed to parse {p}: {e}") from e
+CREDS = CredManager()
+
+
+def s3_unsigned():
+  return boto3.client("s3", region_name=env_region(), config=Config(signature_version=UNSIGNED))
+
+
+def s3_for_read(bucket, repo_dir):
+  if bucket == BUCKET_PUBLIC:
+    session, _, _ = CREDS.resolve(repo_dir=repo_dir, require=False)
+    if session is None:
+      return s3_unsigned()
+    return session.client("s3", region_name=env_region())
+  session, _, _ = CREDS.resolve(repo_dir=repo_dir, require=True)
+  return session.client("s3", region_name=env_region())
+
+
+def s3_for_write(bucket, repo_dir):
+  session, source, arn = CREDS.resolve(repo_dir=repo_dir, require=True)
+  if session is None:
+    raise EVCError("AWS credentials required for upload/push.")
+  logger.info(f"Using AWS credentials from: {source} ({arn})")
+  return session.client("s3", region_name=env_region())
 
 
 def require_access_json(repo_dir):
@@ -219,9 +288,7 @@ def detect_mode(d):
   has_std = ("data" in keys) or ("output" in keys)
   has_model = ("checkpoints" in keys) or ("framework" in keys)
   if has_std and has_model:
-    raise EVCError(
-      "access.json cannot mix standard keys (data/output) with model keys (checkpoints/framework)."
-    )
+    raise EVCError("access.json cannot mix standard keys (data/output) with model keys (checkpoints/framework).")
   if has_model:
     return "model"
   return "standard"
@@ -254,7 +321,6 @@ def ensure_access_lock(repo_dir, policy, mode):
 
   existing = _read_json(lock_path)
   locked_mode = str(existing.get("mode", "standard")).strip().lower() or "standard"
-
   if locked_mode == "model":
     locked_policy = AccessPolicy(
       checkpoints=existing.get("checkpoints", "public"),
@@ -273,22 +339,6 @@ def ensure_access_lock(repo_dir, policy, mode):
       f"Config: {policy.to_json(mode)}\n"
       f"If this is intentional, delete {lock_path} manually (NOT recommended)."
     )
-
-
-def ensure_clean_repo(repo_dir):
-  status = run(["git", "status", "--porcelain"], cwd=repo_dir)
-  if status.strip():
-    raise EVCError("Working tree is dirty. Commit your changes before evc push.")
-
-
-def confirm(prompt, assume_yes=False):
-  if assume_yes:
-    return True
-  try:
-    ans = input(f"{prompt} [y/N]: ").strip().lower()
-  except EOFError:
-    return False
-  return ans in {"y", "yes"}
 
 
 def git_repo_root(start):
@@ -312,6 +362,29 @@ def repo_name_from_origin(origin_url):
   if not name:
     raise EVCError(f"Could not infer repo name from origin URL: {origin_url}")
   return name
+
+
+def ensure_on_main(repo_dir):
+  branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir).strip()
+  if branch != DEFAULT_BRANCH:
+    logger.warning(f"Current branch is '{branch}'. Switching to '{DEFAULT_BRANCH}'.")
+    run(["git", "checkout", DEFAULT_BRANCH], cwd=repo_dir)
+
+
+def ensure_clean_repo(repo_dir):
+  status = run(["git", "status", "--porcelain"], cwd=repo_dir)
+  if status.strip():
+    raise EVCError("Working tree is dirty. Commit your changes before evc push.")
+
+
+def confirm(prompt, assume_yes=False):
+  if assume_yes:
+    return True
+  try:
+    ans = input(f"{prompt} [y/N]: ").strip().lower()
+  except EOFError:
+    return False
+  return ans in {"y", "yes"}
 
 
 def iter_local_files(path):
@@ -348,7 +421,7 @@ def s3_download_prefix(client, bucket, prefix, dest_dir):
     logger.info(f"No objects found in s3://{bucket}/{prefix} (skipping).")
     return
   for key in keys:
-    rel = key[len(prefix) :].lstrip("/")
+    rel = key[len(prefix):].lstrip("/")
     local_path = dest_dir / rel
     local_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -378,7 +451,7 @@ def s3_download_path(client, bucket, repo_prefix, rel_path, repo_dir):
     raise EVCError(f"Nothing found at s3://{bucket}/{file_key} or s3://{bucket}/{dir_prefix}")
 
   for key in keys:
-    rel = key[len(base) :].lstrip("/")
+    rel = key[len(base):].lstrip("/")
     dest = repo_dir / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -407,7 +480,7 @@ def s3_print_tree(keys, base_prefix):
   rels = []
   for k in keys:
     if k.startswith(base_prefix):
-      rel = k[len(base_prefix) :].lstrip("/")
+      rel = k[len(base_prefix):].lstrip("/")
       if rel:
         rels.append(rel)
 
@@ -443,7 +516,7 @@ def artifacts_plan(mode):
 def normalize_user_path(path, mode):
   p = (path or "").strip().lstrip("/")
   if not p:
-    return "."
+    raise EVCError("--path is required")
 
   if mode == "standard":
     root = p.split("/", 1)[0]
@@ -451,30 +524,23 @@ def normalize_user_path(path, mode):
       raise EVCError(f"Unsupported path '{p}'. Allowed roots: {DATA_ROOT}/, {OUTPUT_ROOT}/")
     return p
 
-  if p in {MODEL_ROOT, "model/"}:
-    return MODEL_ROOT
-
   if p.startswith(MODEL_ROOT + "/"):
     if p.startswith(MODEL_CHECKPOINTS) or p.startswith(MODEL_FRAMEWORK_FIT):
       return p
     if p.startswith("model/framework"):
-      rest = p[len("model/framework") :].lstrip("/")
+      rest = p[len("model/framework"):].lstrip("/")
       return f"{MODEL_FRAMEWORK_FIT}/{rest}".rstrip("/")
-    raise EVCError(
-      f"Model repo: only '{MODEL_CHECKPOINTS}/...' or '{MODEL_FRAMEWORK_FIT}/...' are supported."
-    )
+    raise EVCError(f"Model repo: only '{MODEL_CHECKPOINTS}/...' or '{MODEL_FRAMEWORK_FIT}/...' are supported.")
 
   if p.startswith("checkpoints"):
-    rest = p[len("checkpoints") :].lstrip("/")
+    rest = p[len("checkpoints"):].lstrip("/")
     return f"{MODEL_CHECKPOINTS}/{rest}".rstrip("/")
 
   if p.startswith("framework"):
-    rest = p[len("framework") :].lstrip("/")
+    rest = p[len("framework"):].lstrip("/")
     return f"{MODEL_FRAMEWORK_FIT}/{rest}".rstrip("/")
 
-  raise EVCError(
-    "Model repo: only 'model/...', 'checkpoints/...', or 'framework/...' paths are supported."
-  )
+  raise EVCError("Model repo: only 'model/...', 'checkpoints/...', or 'framework/...' paths are supported.")
 
 
 def category_for_path(path, mode):
@@ -485,20 +551,11 @@ def category_for_path(path, mode):
     if p.startswith(OUTPUT_ROOT):
       return "output"
     raise EVCError(f"Unsupported path '{p}'.")
-  if p.startswith(MODEL_CHECKPOINTS) or p == "model/checkpoints":
+  if p.startswith(MODEL_CHECKPOINTS):
     return "checkpoints"
   if p.startswith(MODEL_FRAMEWORK_FIT) or p.startswith("model/framework"):
     return "framework"
-  if p == MODEL_ROOT:
-    return None
   raise EVCError(f"Unsupported model path '{p}'.")
-
-
-def ensure_on_main(repo_dir):
-  branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir).strip()
-  if branch != DEFAULT_BRANCH:
-    logger.warning(f"Current branch is '{branch}'. Switching to '{DEFAULT_BRANCH}'.")
-    run(["git", "checkout", DEFAULT_BRANCH], cwd=repo_dir)
 
 
 def cmd_clone(args):
@@ -518,9 +575,7 @@ def cmd_clone(args):
 
   access_path = dest / "access.json"
   if not access_path.exists():
-    logger.warning(
-      "Clone complete (git only). access.json not found; all other evc operations are disabled until you add access.json."
-    )
+    logger.warning("Clone complete (git only). access.json not found; all other evc operations are disabled until you add access.json.")
     logger.success("Clone complete.")
     return
 
@@ -528,40 +583,11 @@ def cmd_clone(args):
   ensure_access_lock(dest, policy, mode)
   logger.info(f"Access: {policy.to_json(mode)}")
 
-  if mode == "standard":
-    data_private = policy.data == "private"
-    output_private = policy.output == "private"
-    if data_private and output_private:
-      require_creds(
-        "AWS credentials required to clone this repo: both data and output are private."
-      )
-  else:
-    if policy.checkpoints == "private" or policy.framework == "private":
-      if not have_creds():
-        if policy.checkpoints == "private" and policy.framework == "private":
-          raise EVCError(
-            "AWS credentials required to clone this repo: model artifacts are private."
-          )
-        logger.warning("No AWS credentials: cloning will download only the public model parts.")
-
   for rel_dir, category in artifacts_plan(mode):
-    if mode == "standard":
-      if category == "data" and policy.data == "private" and not have_creds():
-        logger.warning("Skipping download of private data (no credentials).")
-        continue
-      if category == "output" and policy.output == "private" and not have_creds():
-        logger.warning("Skipping download of private output (no credentials).")
-        continue
-    else:
-      if category == "checkpoints" and policy.checkpoints == "private" and not have_creds():
-        logger.warning("Skipping download of private checkpoints (no credentials).")
-        continue
-      if category == "framework" and policy.framework == "private" and not have_creds():
-        logger.warning("Skipping download of private framework (no credentials).")
-        continue
-
     bucket = policy.bucket_for(category)
-    client = s3_for_read(bucket)
+    if bucket == BUCKET_PRIVATE:
+      CREDS.resolve(repo_dir=dest, require=True)
+    client = s3_for_read(bucket, dest)
     prefix = f"{repo}/{rel_dir}/"
     dest_dir = dest / rel_dir
     logger.info(f"Downloading {rel_dir}/ from s3://{bucket}/{prefix} -> {dest_dir}")
@@ -601,8 +627,8 @@ def cmd_pull(args):
   for rel_dir, category in artifacts_plan(mode):
     bucket = policy.bucket_for(category)
     if bucket == BUCKET_PRIVATE:
-      require_creds("AWS credentials required to read from evc-private (env vars only).")
-    client = s3_for_read(bucket)
+      CREDS.resolve(repo_dir=repo_dir, require=True)
+    client = s3_for_read(bucket, repo_dir)
     prefix = f"{repo}/{rel_dir}/"
     dest_dir = repo_dir / rel_dir
     logger.info(f"Downloading {rel_dir}/ from s3://{bucket}/{prefix} -> {dest_dir}")
@@ -619,7 +645,7 @@ def cmd_push(_args):
   ensure_access_lock(repo_dir, policy, mode)
   repo = repo_name_from_origin(git_origin_url(repo_dir))
 
-  require_creds("AWS credentials required for upload/push (env vars only).")
+  CREDS.resolve(repo_dir=repo_dir, require=True)
   ensure_clean_repo(repo_dir)
 
   logger.info(f"Git push (origin/{DEFAULT_BRANCH})")
@@ -630,7 +656,7 @@ def cmd_push(_args):
     if not local_dir.exists():
       continue
     bucket = policy.bucket_for(category)
-    client = s3_for_write(bucket)
+    client = s3_for_write(bucket, repo_dir)
     logger.info(f"Uploading {rel_dir}/ -> s3://{bucket}/{repo}/{rel_dir}/")
     s3_upload_path(client, bucket, repo, local_dir.relative_to(repo_dir), repo_dir)
 
@@ -645,24 +671,20 @@ def cmd_download(args):
 
   rel_path = normalize_user_path(args.path, mode)
   cat = category_for_path(rel_path, mode)
-
-  if rel_path == ".":
-    raise EVCError("Use 'evc view' for listing, or provide a path to download.")
-  if cat is None:
-    bucket = BUCKET_PUBLIC if not have_creds() else BUCKET_PUBLIC
-    client = s3_for_read(bucket)
-    prefix = f"{repo}/{MODEL_ROOT}/"
-    logger.info(f"Downloading {MODEL_ROOT}/ from s3://{bucket}/{prefix} -> {repo_dir / MODEL_ROOT}")
-    s3_download_prefix(client, bucket, prefix, repo_dir / MODEL_ROOT)
-    logger.success("Download complete.")
-    return
-
   bucket = policy.bucket_for(cat)
   if bucket == BUCKET_PRIVATE:
-    require_creds("AWS credentials required to read from evc-private (env vars only).")
-  client = s3_for_read(bucket)
+    CREDS.resolve(repo_dir=repo_dir, require=True)
+
+  client = s3_for_read(bucket, repo_dir)
   logger.info(f"Downloading --path {rel_path} from s3://{bucket}/{repo}/")
-  s3_download_path(client, bucket, repo, rel_path, repo_dir)
+  try:
+    s3_download_path(client, bucket, repo, rel_path, repo_dir)
+  except EVCError as e:
+    if "AccessDenied" in str(e):
+      _, source, arn = CREDS.resolve(repo_dir=repo_dir, require=False)
+      hint = f" (credentials source: {source}, principal: {arn})" if source else " (no credentials)"
+      raise EVCError(str(e) + hint)
+    raise
   logger.success("Download complete.")
 
 
@@ -674,13 +696,17 @@ def cmd_upload(args):
 
   rel_path = normalize_user_path(args.path, mode)
   cat = category_for_path(rel_path, mode)
-  if cat is None:
-    raise EVCError("Upload requires a concrete managed path, e.g. model/checkpoints/...")
-
   bucket = policy.bucket_for(cat)
-  client = s3_for_write(bucket)
+
+  client = s3_for_write(bucket, repo_dir)
   logger.info(f"Uploading --path {rel_path} to s3://{bucket}/{repo}/")
-  s3_upload_path(client, bucket, repo, Path(rel_path), repo_dir)
+  try:
+    s3_upload_path(client, bucket, repo, Path(rel_path), repo_dir)
+  except EVCError as e:
+    if "AccessDenied" in str(e):
+      _, source, arn = CREDS.resolve(repo_dir=repo_dir, require=False)
+      raise EVCError(str(e) + f" (credentials source: {source}, principal: {arn})")
+    raise
   logger.success("Upload complete.")
 
 
@@ -695,8 +721,8 @@ def cmd_view(args):
     for rel_dir, cat in artifacts_plan(mode):
       bucket = policy.bucket_for(cat)
       if bucket == BUCKET_PRIVATE:
-        require_creds("AWS credentials required to view evc-private (env vars only).")
-      client = s3_for_read(bucket)
+        CREDS.resolve(repo_dir=repo_dir, require=True)
+      client = s3_for_read(bucket, repo_dir)
       prefix = f"{repo}/{rel_dir}/"
       logger.info(f"[{rel_dir}] s3://{bucket}/{prefix}")
       s3_print_tree(s3_list_keys(client, bucket, prefix), prefix)
@@ -705,19 +731,12 @@ def cmd_view(args):
 
   rel_path = normalize_user_path(rel_path, mode)
   cat = category_for_path(rel_path, mode)
-
-  if cat is None:
-    prefix = f"{repo}/{MODEL_ROOT}/"
-    bucket = BUCKET_PUBLIC if not have_creds() else BUCKET_PUBLIC
-    client = s3_for_read(bucket)
-    logger.info(f"[{MODEL_ROOT}] s3://{bucket}/{prefix}")
-    s3_print_tree(s3_list_keys(client, bucket, prefix), prefix)
-    return
-
   bucket = policy.bucket_for(cat)
   if bucket == BUCKET_PRIVATE:
-    require_creds("AWS credentials required to view evc-private (env vars only).")
-  client = s3_for_read(bucket)
+    CREDS.resolve(repo_dir=repo_dir, require=True)
+  client = s3_for_read(bucket, repo_dir)
   prefix = f"{repo}/{rel_path.rstrip('/')}/"
   logger.info(f"s3://{bucket}/{prefix}")
   s3_print_tree(s3_list_keys(client, bucket, prefix), prefix)
+
+

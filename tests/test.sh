@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-EVC="${EVC:-evc}"   # or: EVC="python3 /path/to/evc.py"
+EVC="${EVC:-eosvc}"   
 
 run() {
   echo
@@ -96,21 +96,22 @@ main() {
 
   header "MODEL: view (root + checkpoints + framework)"
   ( cd eosdev && run "$EVC" view )
-  ( cd eosdev && run "$EVC" view --path model )
   ( cd eosdev && run "$EVC" view --path model/checkpoints )
   ( cd eosdev && run "$EVC" view --path model/framework )
 
-  header "MODEL: download examples"
-  ( cd eosdev && run "$EVC" download --path model/checkpoints )
-  ( cd eosdev && run "$EVC" download --path checkpoints )          # alias
-  ( cd eosdev && run "$EVC" download --path framework )            # alias -> model/framework/fit
+
 
   header "MODEL: upload examples (requires env AWS creds)"
   make_dummy_files_model "eosdev"
   ( cd eosdev && run "$EVC" upload --path model/checkpoints/test-run )
   ( cd eosdev && run "$EVC" upload --path model/framework/fit/test-fit )
-  ( cd eosdev && run "$EVC" upload --path checkpoints/test-run )   # alias
-  ( cd eosdev && run "$EVC" upload --path framework/test-fit )     # alias
+  ( cd eosdev && run "$EVC" upload --path checkpoints/test-run )   
+  ( cd eosdev && run "$EVC" upload --path framework/test-fit )    
+
+  header "MODEL: download examples"
+  ( cd eosdev && run "$EVC" download --path model/checkpoints )
+  ( cd eosdev && run "$EVC" download --path checkpoints )         
+  ( cd eosdev && run "$EVC" download --path framework )          
 
   header "MODEL: pull"
   ( cd eosdev && run "$EVC" pull -y )
