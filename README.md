@@ -254,3 +254,10 @@ If you want unauthenticated `view` or directory downloads to work:
 
 Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (and optional session token) in your shell environment.
 
+
+
+## About the Ersilia Open Source Initiative
+
+The [Ersilia Open Source Initiative](https://ersilia.io) is a tech-nonprofit organization fueling sustainable research in the Global South. Ersilia's main asset is the [Ersilia Model Hub](https://github.com/ersilia-os/ersilia), an open-source repository of AI/ML models for antimicrobial drug discovery.
+
+![Ersilia Logo](assets/Ersilia_Brand.png)
