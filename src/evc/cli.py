@@ -1,7 +1,16 @@
 import argparse
 
-from evc.helpers import cmd_clone, cmd_download, cmd_pull, cmd_push, cmd_upload, cmd_view, bootstrap_env_creds
+from evc.helpers import (
+  cmd_clone,
+  cmd_download,
+  cmd_pull,
+  cmd_push,
+  cmd_upload,
+  cmd_view,
+  bootstrap_env_creds,
+)
 from evc.helpers import DEFAULT_ORG, EVCError, logger
+
 
 def build_parser():
   p = argparse.ArgumentParser(prog="evc", description="Ersilia Version Control (Git + S3)")

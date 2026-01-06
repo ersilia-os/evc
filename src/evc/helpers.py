@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import argparse
 import json
 import os
@@ -21,10 +20,11 @@ BUCKET_PUBLIC = "evc-public"
 BUCKET_PRIVATE = "evc-private"
 
 DATA_ROOT = "data"
-OUTPUT_ROOTS = {"output"}
+OUTPUT_ROOT = "output"
 
 MODEL_ROOT = "model"
-MODEL_SUBROOTS = {"checkpoints", "framework"}
+MODEL_CHECKPOINTS = "model/checkpoints"
+MODEL_FRAMEWORK_FIT = "model/framework/fit"
 
 EVC_META_DIR = ".evc"
 ACCESS_LOCK_FILE = "access.lock.json"
@@ -49,14 +49,25 @@ class Logger:
         pass
       self._sink_id = None
     if verbose:
-      handler = RichHandler(rich_tracebacks=True, markup=True, show_path=False, log_time_format="%H:%M:%S")
+      handler = RichHandler(
+        rich_tracebacks=True, markup=True, show_path=False, log_time_format="%H:%M:%S"
+      )
       self._sink_id = _loguru.add(handler, format="{message}", colorize=True)
 
-  def debug(self, msg): _loguru.debug(msg)
-  def info(self, msg): _loguru.info(msg)
-  def warning(self, msg): _loguru.warning(msg)
-  def error(self, msg): _loguru.error(msg)
-  def success(self, msg): _loguru.success(msg)
+  def debug(self, msg):
+    _loguru.debug(msg)
+
+  def info(self, msg):
+    _loguru.info(msg)
+
+  def warning(self, msg):
+    _loguru.warning(msg)
+
+  def error(self, msg):
+    _loguru.error(msg)
+
+  def success(self, msg):
+    _loguru.success(msg)
 
 
 logger = Logger()
@@ -136,29 +147,35 @@ def _normalize_access_value(v):
 
 
 class AccessPolicy:
-  def __init__(self, data="public", output="public", model="public"):
-    self.data = _normalize_access_value(data)
-    self.output = _normalize_access_value(output)
-    self.model = _normalize_access_value(model)
+  def __init__(self, data=None, output=None, checkpoints=None, framework=None):
+    self.data = _normalize_access_value(data) if data is not None else None
+    self.output = _normalize_access_value(output) if output is not None else None
+    self.checkpoints = _normalize_access_value(checkpoints) if checkpoints is not None else None
+    self.framework = _normalize_access_value(framework) if framework is not None else None
 
   def bucket_for(self, category):
     if category == "data":
       return BUCKET_PUBLIC if self.data == "public" else BUCKET_PRIVATE
     if category == "output":
       return BUCKET_PUBLIC if self.output == "public" else BUCKET_PRIVATE
-    if category == "model":
-      return BUCKET_PUBLIC if self.model == "public" else BUCKET_PRIVATE
+    if category == "checkpoints":
+      return BUCKET_PUBLIC if self.checkpoints == "public" else BUCKET_PRIVATE
+    if category == "framework":
+      return BUCKET_PUBLIC if self.framework == "public" else BUCKET_PRIVATE
     raise EVCError(f"Unknown access category: {category}")
 
   def to_json(self, mode):
-    return {"mode": mode, "data": self.data, "output": self.output, "model": self.model}
+    if mode == "standard":
+      return {"mode": mode, "data": self.data, "output": self.output}
+    return {"mode": mode, "checkpoints": self.checkpoints, "framework": self.framework}
 
   def __eq__(self, other):
     return (
       isinstance(other, AccessPolicy)
       and self.data == other.data
       and self.output == other.output
-      and self.model == other.model
+      and self.checkpoints == other.checkpoints
+      and self.framework == other.framework
     )
 
 
@@ -193,19 +210,19 @@ def _read_json(p):
 def require_access_json(repo_dir):
   p = repo_dir / "access.json"
   if not p.exists():
-    raise EVCError(
-      "access.json is required for evc operations in this repo.\n"
-      "Create one at repo root, e.g.\n"
-      '  {"data":"public","output":"public"}\n'
-      "or for model repos:\n"
-      '  {"model":"public"}\n'
-    )
+    raise EVCError("access.json is required for evc operations in this repo.")
   return p
 
 
-def detect_mode(access_dict):
-  keys = set((access_dict or {}).keys())
-  if "model" in keys and not (("data" in keys) or ("output" in keys) or ("access" in keys)):
+def detect_mode(d):
+  keys = set((d or {}).keys())
+  has_std = ("data" in keys) or ("output" in keys)
+  has_model = ("checkpoints" in keys) or ("framework" in keys)
+  if has_std and has_model:
+    raise EVCError(
+      "access.json cannot mix standard keys (data/output) with model keys (checkpoints/framework)."
+    )
+  if has_model:
     return "model"
   return "standard"
 
@@ -213,11 +230,16 @@ def detect_mode(access_dict):
 def load_access(repo_dir):
   d = _read_json(require_access_json(repo_dir))
   mode = detect_mode(d)
-  policy = AccessPolicy(
-    d.get("data", "public"),
-    d.get("output", "public"),
-    d.get("model", "public"),
-  )
+  if mode == "model":
+    policy = AccessPolicy(
+      checkpoints=d.get("checkpoints", "public"),
+      framework=d.get("framework", "public"),
+    )
+  else:
+    policy = AccessPolicy(
+      data=d.get("data", "public"),
+      output=d.get("output", "public"),
+    )
   return policy, mode
 
 
@@ -232,11 +254,17 @@ def ensure_access_lock(repo_dir, policy, mode):
 
   existing = _read_json(lock_path)
   locked_mode = str(existing.get("mode", "standard")).strip().lower() or "standard"
-  locked_policy = AccessPolicy(
-    existing.get("data", "public"),
-    existing.get("output", "public"),
-    existing.get("model", "public"),
-  )
+
+  if locked_mode == "model":
+    locked_policy = AccessPolicy(
+      checkpoints=existing.get("checkpoints", "public"),
+      framework=existing.get("framework", "public"),
+    )
+  else:
+    locked_policy = AccessPolicy(
+      data=existing.get("data", "public"),
+      output=existing.get("output", "public"),
+    )
 
   if locked_mode != mode or locked_policy != policy:
     raise EVCError(
@@ -320,7 +348,7 @@ def s3_download_prefix(client, bucket, prefix, dest_dir):
     logger.info(f"No objects found in s3://{bucket}/{prefix} (skipping).")
     return
   for key in keys:
-    rel = key[len(prefix):].lstrip("/")
+    rel = key[len(prefix) :].lstrip("/")
     local_path = dest_dir / rel
     local_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -350,7 +378,7 @@ def s3_download_path(client, bucket, repo_prefix, rel_path, repo_dir):
     raise EVCError(f"Nothing found at s3://{bucket}/{file_key} or s3://{bucket}/{dir_prefix}")
 
   for key in keys:
-    rel = key[len(base):].lstrip("/")
+    rel = key[len(base) :].lstrip("/")
     dest = repo_dir / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -379,7 +407,7 @@ def s3_print_tree(keys, base_prefix):
   rels = []
   for k in keys:
     if k.startswith(base_prefix):
-      rel = k[len(base_prefix):].lstrip("/")
+      rel = k[len(base_prefix) :].lstrip("/")
       if rel:
         rels.append(rel)
 
@@ -408,26 +436,62 @@ def s3_print_tree(keys, base_prefix):
 
 def artifacts_plan(mode):
   if mode == "model":
-    return [(f"{MODEL_ROOT}/{s}", "model") for s in sorted(MODEL_SUBROOTS)]
-  plan = [(DATA_ROOT, "data")]
-  plan += [(r, "output") for r in sorted(OUTPUT_ROOTS)]
-  return plan
+    return [(MODEL_CHECKPOINTS, "checkpoints"), (MODEL_FRAMEWORK_FIT, "framework")]
+  return [(DATA_ROOT, "data"), (OUTPUT_ROOT, "output")]
 
 
-def resolve_category_for_path(rel_path, mode):
-  rel_path = rel_path.strip().lstrip("/")
-  if not rel_path:
-    raise EVCError("--path is required")
-  root = rel_path.split("/", 1)[0]
-  if mode == "model":
-    if root != MODEL_ROOT:
-      raise EVCError("Model repo: only 'model/...' paths are supported.")
-    return "model"
-  if root == DATA_ROOT:
-    return "data"
-  if root in OUTPUT_ROOTS:
-    return "output"
-  raise EVCError(f"Unsupported path root '{root}'.")
+def normalize_user_path(path, mode):
+  p = (path or "").strip().lstrip("/")
+  if not p:
+    return "."
+
+  if mode == "standard":
+    root = p.split("/", 1)[0]
+    if root not in {DATA_ROOT, OUTPUT_ROOT}:
+      raise EVCError(f"Unsupported path '{p}'. Allowed roots: {DATA_ROOT}/, {OUTPUT_ROOT}/")
+    return p
+
+  if p in {MODEL_ROOT, "model/"}:
+    return MODEL_ROOT
+
+  if p.startswith(MODEL_ROOT + "/"):
+    if p.startswith(MODEL_CHECKPOINTS) or p.startswith(MODEL_FRAMEWORK_FIT):
+      return p
+    if p.startswith("model/framework"):
+      rest = p[len("model/framework") :].lstrip("/")
+      return f"{MODEL_FRAMEWORK_FIT}/{rest}".rstrip("/")
+    raise EVCError(
+      f"Model repo: only '{MODEL_CHECKPOINTS}/...' or '{MODEL_FRAMEWORK_FIT}/...' are supported."
+    )
+
+  if p.startswith("checkpoints"):
+    rest = p[len("checkpoints") :].lstrip("/")
+    return f"{MODEL_CHECKPOINTS}/{rest}".rstrip("/")
+
+  if p.startswith("framework"):
+    rest = p[len("framework") :].lstrip("/")
+    return f"{MODEL_FRAMEWORK_FIT}/{rest}".rstrip("/")
+
+  raise EVCError(
+    "Model repo: only 'model/...', 'checkpoints/...', or 'framework/...' paths are supported."
+  )
+
+
+def category_for_path(path, mode):
+  p = path.strip().lstrip("/")
+  if mode == "standard":
+    if p.startswith(DATA_ROOT):
+      return "data"
+    if p.startswith(OUTPUT_ROOT):
+      return "output"
+    raise EVCError(f"Unsupported path '{p}'.")
+  if p.startswith(MODEL_CHECKPOINTS) or p == "model/checkpoints":
+    return "checkpoints"
+  if p.startswith(MODEL_FRAMEWORK_FIT) or p.startswith("model/framework"):
+    return "framework"
+  if p == MODEL_ROOT:
+    return None
+  raise EVCError(f"Unsupported model path '{p}'.")
 
 
 def ensure_on_main(repo_dir):
@@ -454,7 +518,9 @@ def cmd_clone(args):
 
   access_path = dest / "access.json"
   if not access_path.exists():
-    logger.warning("Clone complete (git only). access.json not found; all other evc operations are disabled until you add access.json.")
+    logger.warning(
+      "Clone complete (git only). access.json not found; all other evc operations are disabled until you add access.json."
+    )
     logger.success("Clone complete.")
     return
 
@@ -466,25 +532,33 @@ def cmd_clone(args):
     data_private = policy.data == "private"
     output_private = policy.output == "private"
     if data_private and output_private:
-      require_creds("AWS credentials required to clone this repo: both data and output are private.")
-    if (data_private or output_private) and not have_creds():
-      if not data_private:
-        logger.warning("No AWS credentials found: skipping private output; downloading public data only.")
-      elif not output_private:
-        logger.warning("No AWS credentials found: skipping private data; downloading public output only.")
+      require_creds(
+        "AWS credentials required to clone this repo: both data and output are private."
+      )
   else:
-    if policy.model == "private":
-      require_creds("AWS credentials required to clone this repo: model is private.")
+    if policy.checkpoints == "private" or policy.framework == "private":
+      if not have_creds():
+        if policy.checkpoints == "private" and policy.framework == "private":
+          raise EVCError(
+            "AWS credentials required to clone this repo: model artifacts are private."
+          )
+        logger.warning("No AWS credentials: cloning will download only the public model parts.")
 
   for rel_dir, category in artifacts_plan(mode):
-    if mode == "standard" and category == "data" and policy.data == "private" and not have_creds():
-      logger.warning("Skipping download of private data (no credentials).")
-      continue
-    if mode == "standard" and category == "output" and policy.output == "private" and not have_creds():
-      logger.warning("Skipping download of private output (no credentials).")
-      continue
-    if mode == "model" and policy.model == "private" and not have_creds():
-      raise EVCError("AWS credentials required to download private model artifacts.")
+    if mode == "standard":
+      if category == "data" and policy.data == "private" and not have_creds():
+        logger.warning("Skipping download of private data (no credentials).")
+        continue
+      if category == "output" and policy.output == "private" and not have_creds():
+        logger.warning("Skipping download of private output (no credentials).")
+        continue
+    else:
+      if category == "checkpoints" and policy.checkpoints == "private" and not have_creds():
+        logger.warning("Skipping download of private checkpoints (no credentials).")
+        continue
+      if category == "framework" and policy.framework == "private" and not have_creds():
+        logger.warning("Skipping download of private framework (no credentials).")
+        continue
 
     bucket = policy.bucket_for(category)
     client = s3_for_read(bucket)
@@ -502,7 +576,6 @@ def cmd_pull(args):
 
   policy, mode = load_access(repo_dir)
   ensure_access_lock(repo_dir, policy, mode)
-
   repo = repo_name_from_origin(git_origin_url(repo_dir))
 
   logger.info(f"Git pull --rebase (origin/{DEFAULT_BRANCH})")
@@ -523,10 +596,7 @@ def cmd_pull(args):
       raise EVCError("Aborted by user.")
     for p in to_delete:
       logger.info(f"Deleting {p.relative_to(repo_dir)}")
-      if p.is_dir():
-        shutil.rmtree(p)
-      else:
-        p.unlink()
+      shutil.rmtree(p) if p.is_dir() else p.unlink()
 
   for rel_dir, category in artifacts_plan(mode):
     bucket = policy.bucket_for(category)
@@ -547,7 +617,6 @@ def cmd_push(_args):
 
   policy, mode = load_access(repo_dir)
   ensure_access_lock(repo_dir, policy, mode)
-
   repo = repo_name_from_origin(git_origin_url(repo_dir))
 
   require_creds("AWS credentials required for upload/push (env vars only).")
@@ -570,15 +639,25 @@ def cmd_push(_args):
 
 def cmd_download(args):
   repo_dir = git_repo_root(Path.cwd())
-
   policy, mode = load_access(repo_dir)
   ensure_access_lock(repo_dir, policy, mode)
-
   repo = repo_name_from_origin(git_origin_url(repo_dir))
 
-  rel_path = (args.path or "").strip()
-  category = resolve_category_for_path(rel_path, mode)
-  bucket = policy.bucket_for(category)
+  rel_path = normalize_user_path(args.path, mode)
+  cat = category_for_path(rel_path, mode)
+
+  if rel_path == ".":
+    raise EVCError("Use 'evc view' for listing, or provide a path to download.")
+  if cat is None:
+    bucket = BUCKET_PUBLIC if not have_creds() else BUCKET_PUBLIC
+    client = s3_for_read(bucket)
+    prefix = f"{repo}/{MODEL_ROOT}/"
+    logger.info(f"Downloading {MODEL_ROOT}/ from s3://{bucket}/{prefix} -> {repo_dir / MODEL_ROOT}")
+    s3_download_prefix(client, bucket, prefix, repo_dir / MODEL_ROOT)
+    logger.success("Download complete.")
+    return
+
+  bucket = policy.bucket_for(cat)
   if bucket == BUCKET_PRIVATE:
     require_creds("AWS credentials required to read from evc-private (env vars only).")
   client = s3_for_read(bucket)
@@ -589,15 +668,16 @@ def cmd_download(args):
 
 def cmd_upload(args):
   repo_dir = git_repo_root(Path.cwd())
-
   policy, mode = load_access(repo_dir)
   ensure_access_lock(repo_dir, policy, mode)
-
   repo = repo_name_from_origin(git_origin_url(repo_dir))
 
-  rel_path = (args.path or "").strip()
-  category = resolve_category_for_path(rel_path, mode)
-  bucket = policy.bucket_for(category)
+  rel_path = normalize_user_path(args.path, mode)
+  cat = category_for_path(rel_path, mode)
+  if cat is None:
+    raise EVCError("Upload requires a concrete managed path, e.g. model/checkpoints/...")
+
+  bucket = policy.bucket_for(cat)
   client = s3_for_write(bucket)
   logger.info(f"Uploading --path {rel_path} to s3://{bucket}/{repo}/")
   s3_upload_path(client, bucket, repo, Path(rel_path), repo_dir)
@@ -606,31 +686,38 @@ def cmd_upload(args):
 
 def cmd_view(args):
   repo_dir = git_repo_root(Path.cwd())
-
   policy, mode = load_access(repo_dir)
   ensure_access_lock(repo_dir, policy, mode)
-
   repo = repo_name_from_origin(git_origin_url(repo_dir))
 
   rel_path = (args.path or ".").strip().lstrip("/")
-
-  def show(category, prefix, title):
-    bucket = policy.bucket_for(category)
-    if bucket == BUCKET_PRIVATE:
-      require_creds("AWS credentials required to view evc-private (env vars only).")
-    client = s3_for_read(bucket)
-    logger.info(title)
-    s3_print_tree(s3_list_keys(client, bucket, prefix), prefix)
-    logger.info("")
-
   if rel_path in {"", "."}:
-    for rel_dir, category in artifacts_plan(mode):
-      b = policy.bucket_for(category)
-      show(category, f"{repo}/{rel_dir}/", f"[{rel_dir}] s3://{b}/{repo}/{rel_dir}/")
+    for rel_dir, cat in artifacts_plan(mode):
+      bucket = policy.bucket_for(cat)
+      if bucket == BUCKET_PRIVATE:
+        require_creds("AWS credentials required to view evc-private (env vars only).")
+      client = s3_for_read(bucket)
+      prefix = f"{repo}/{rel_dir}/"
+      logger.info(f"[{rel_dir}] s3://{bucket}/{prefix}")
+      s3_print_tree(s3_list_keys(client, bucket, prefix), prefix)
+      logger.info("")
     return
 
-  category = resolve_category_for_path(rel_path, mode)
-  b = policy.bucket_for(category)
-  show(category, f"{repo}/{rel_path.rstrip('/')}/", f"s3://{b}/{repo}/{rel_path.rstrip('/')}/")
+  rel_path = normalize_user_path(rel_path, mode)
+  cat = category_for_path(rel_path, mode)
 
+  if cat is None:
+    prefix = f"{repo}/{MODEL_ROOT}/"
+    bucket = BUCKET_PUBLIC if not have_creds() else BUCKET_PUBLIC
+    client = s3_for_read(bucket)
+    logger.info(f"[{MODEL_ROOT}] s3://{bucket}/{prefix}")
+    s3_print_tree(s3_list_keys(client, bucket, prefix), prefix)
+    return
 
+  bucket = policy.bucket_for(cat)
+  if bucket == BUCKET_PRIVATE:
+    require_creds("AWS credentials required to view evc-private (env vars only).")
+  client = s3_for_read(bucket)
+  prefix = f"{repo}/{rel_path.rstrip('/')}/"
+  logger.info(f"s3://{bucket}/{prefix}")
+  s3_print_tree(s3_list_keys(client, bucket, prefix), prefix)
