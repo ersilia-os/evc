@@ -1,4 +1,3 @@
-````md
 # EOSVC (Ersilia Version Control)
 
 EOSVC is a small CLI for syncing large artifacts to **S3**, while your code remains in **Git**.
@@ -284,6 +283,3 @@ Provide credentials via:
 The [Ersilia Open Source Initiative](https://ersilia.io) is a tech-nonprofit organization fueling sustainable research in the Global South. Ersilia's main asset is the [Ersilia Model Hub](https://github.com/ersilia-os/ersilia), an open-source repository of AI/ML models for antimicrobial drug discovery.
 
 ![Ersilia Logo](assets/Ersilia_Brand.png)
-
-```
-```
