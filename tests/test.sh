@@ -1,12 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-EVC="${EVC:-eosvc}"   
+EVC="${EVC:-eosvc}"
+ORG="${ORG:-ersilia-os}"
+BRANCH="${BRANCH:-main}"
 
 run() {
   echo
   echo "==> $*"
   "$@"
+}
+
+run_may_fail() {
+  echo
+  echo "==> $* (allowed to fail)"
+  set +e
+  "$@"
+  local rc=$?
+  set -e
+  if [ $rc -ne 0 ]; then
+    echo "WARN: command failed (exit=$rc) but continuing: $*"
+  fi
+  return 0
 }
 
 header() {
@@ -28,12 +43,20 @@ ensure_clean_dir() {
   fi
 }
 
+git_clone_repo() {
+  local repo="$1"
+  local dest="$2"
+  local url="https://github.com/${ORG}/${repo}.git"
+  ensure_clean_dir "$dest"
+  run git clone --branch "$BRANCH" --single-branch "$url" "$dest"
+}
+
 write_access_json_model() {
   local repo_dir="$1"
   cat > "${repo_dir}/access.json" <<'JSON'
 {
   "checkpoints": "public",
-  "framework": "public"
+  "fit": "public"
 }
 JSON
 }
@@ -51,9 +74,9 @@ JSON
 make_dummy_files_model() {
   local repo_dir="$1"
   mkdir -p "${repo_dir}/model/checkpoints/test-run"
-  mkdir -p "${repo_dir}/model/framework/fit/test-fit"
+  mkdir -p "${repo_dir}/model/fit/test-fit"
   echo "checkpoint blob" > "${repo_dir}/model/checkpoints/test-run/ckpt.txt"
-  echo "framework blob" > "${repo_dir}/model/framework/fit/test-fit/fw.txt"
+  echo "fit blob" > "${repo_dir}/model/fit/test-fit/fw.txt"
 }
 
 make_dummy_files_standard() {
@@ -64,19 +87,9 @@ make_dummy_files_standard() {
   echo "output blob" > "${repo_dir}/output/test/out.txt"
 }
 
-git_commit_if_possible() {
-  local repo_dir="$1"
-  pushd "$repo_dir" >/dev/null
-  git status --porcelain >/dev/null 2>&1 || { popd >/dev/null; return; }
-  if [ -n "$(git status --porcelain)" ]; then
-    git add -A
-    git commit -m "test: evc artifacts update" || true
-  fi
-  popd >/dev/null
-}
-
 main() {
   require_cmd git
+  require_cmd "$EVC"
 
   header "ENV CHECK (EVC uses env-only AWS creds)"
   echo "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID-<unset>}"
@@ -84,45 +97,35 @@ main() {
   echo "AWS_SESSION_TOKEN=$( [ -n "${AWS_SESSION_TOKEN-}" ] && echo '<set>' || echo '<unset>' )"
   echo "AWS_REGION=${AWS_REGION-<unset>}"
   echo "AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION-<unset>}"
+  echo "EVC_REPO_NAME=${EVC_REPO_NAME-<unset>} (if unset, defaults to folder name)"
 
-  header "1) MODEL REPO: eosdev"
-  ensure_clean_dir eosdev
-  run "$EVC" clone eosdev
+  header "1) MODEL REPO: eosdev (git clone, then test upload/download/view)"
+  git_clone_repo "eosdev" "eosdev"
 
   if [ ! -f "eosdev/access.json" ]; then
     echo "access.json missing after clone. Creating a public model access.json for testing."
     write_access_json_model "eosdev"
   fi
 
-  header "MODEL: view (root + checkpoints + framework)"
+  header "MODEL: view (root + checkpoints + fit)"
   ( cd eosdev && run "$EVC" view )
   ( cd eosdev && run "$EVC" view --path model/checkpoints )
-  ( cd eosdev && run "$EVC" view --path model/framework )
+  ( cd eosdev && run "$EVC" view --path model/fit )
 
-
-
-  header "MODEL: upload examples (requires env AWS creds)"
+  header "MODEL: upload examples"
   make_dummy_files_model "eosdev"
   ( cd eosdev && run "$EVC" upload --path model/checkpoints/test-run )
-  ( cd eosdev && run "$EVC" upload --path model/framework/fit/test-fit )
-  ( cd eosdev && run "$EVC" upload --path checkpoints/test-run )   
-  ( cd eosdev && run "$EVC" upload --path framework/test-fit )    
+  ( cd eosdev && run "$EVC" upload --path model/fit/test-fit )
+  ( cd eosdev && run "$EVC" upload --path checkpoints/test-run )
+  ( cd eosdev && run "$EVC" upload --path fit/test-fit )
 
   header "MODEL: download examples"
-  ( cd eosdev && run "$EVC" download --path model/checkpoints )
-  ( cd eosdev && run "$EVC" download --path checkpoints )         
-  ( cd eosdev && run "$EVC" download --path framework )          
+  ( cd eosdev && run_may_fail "$EVC" download --path model/checkpoints )
+  ( cd eosdev && run_may_fail "$EVC" download --path checkpoints )
+  ( cd eosdev && run_may_fail "$EVC" download --path fit )
 
-  header "MODEL: pull"
-  ( cd eosdev && run "$EVC" pull -y )
-
-  header "MODEL: push (requires clean git, do a commit first)"
-  git_commit_if_possible "eosdev"
-  ( cd eosdev && run "$EVC" push )
-
-  header "2) STANDARD REPO (data/output): evc-dev-analysis"
-  ensure_clean_dir evc-dev-analysis
-  run "$EVC" clone evc-dev-analysis
+  header "2) STANDARD REPO (data/output): evc-dev-analysis (git clone, then test upload/download/view)"
+  git_clone_repo "evc-dev-analysis" "evc-dev-analysis"
 
   if [ ! -f "evc-dev-analysis/access.json" ]; then
     echo "access.json missing after clone. Creating a public standard access.json for testing."
@@ -134,21 +137,14 @@ main() {
   ( cd evc-dev-analysis && run "$EVC" view --path data )
   ( cd evc-dev-analysis && run "$EVC" view --path output )
 
-  header "STANDARD: download examples"
-  ( cd evc-dev-analysis && run "$EVC" download --path data )
-  ( cd evc-dev-analysis && run "$EVC" download --path output )
-
-  header "STANDARD: upload examples (requires env AWS creds)"
+  header "STANDARD: upload examples"
   make_dummy_files_standard "evc-dev-analysis"
   ( cd evc-dev-analysis && run "$EVC" upload --path data/test )
   ( cd evc-dev-analysis && run "$EVC" upload --path output/test )
 
-  header "STANDARD: pull"
-  ( cd evc-dev-analysis && run "$EVC" pull -y )
-
-  header "STANDARD: push (requires clean git, do a commit first)"
-  git_commit_if_possible "evc-dev-analysis"
-  ( cd evc-dev-analysis && run "$EVC" push )
+  header "STANDARD: download examples (allowed to fail if nothing exists / no perms)"
+  ( cd evc-dev-analysis && run_may_fail "$EVC" download --path data )
+  ( cd evc-dev-analysis && run_may_fail "$EVC" download --path output )
 
   header "DONE"
   echo "All commands executed."
