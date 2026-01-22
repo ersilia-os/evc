@@ -74,9 +74,9 @@ JSON
 make_dummy_files_model() {
   local repo_dir="$1"
   mkdir -p "${repo_dir}/model/checkpoints/test-run"
-  mkdir -p "${repo_dir}/model/fit/test-fit"
+  mkdir -p "${repo_dir}/model/fit/fit/test-fit"
   echo "checkpoint blob" > "${repo_dir}/model/checkpoints/test-run/ckpt.txt"
-  echo "fit blob" > "${repo_dir}/model/fit/test-fit/fw.txt"
+  echo "fit blob" > "${repo_dir}/model/fit/fit/test-fit/fw.txt"
 }
 
 make_dummy_files_standard() {
@@ -91,7 +91,7 @@ main() {
   require_cmd git
   require_cmd "$EVC"
 
-  header "ENV CHECK (EVC uses env-only AWS creds)"
+  header "ENV CHECK"
   echo "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID-<unset>}"
   echo "AWS_SECRET_ACCESS_KEY=$( [ -n "${AWS_SECRET_ACCESS_KEY-}" ] && echo '<set>' || echo '<unset>' )"
   echo "AWS_SESSION_TOKEN=$( [ -n "${AWS_SESSION_TOKEN-}" ] && echo '<set>' || echo '<unset>' )"
@@ -99,7 +99,7 @@ main() {
   echo "AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION-<unset>}"
   echo "EVC_REPO_NAME=${EVC_REPO_NAME-<unset>} (if unset, defaults to folder name)"
 
-  header "1) MODEL REPO: eosdev (git clone, then test upload/download/view)"
+  header "1) MODEL REPO: eosdev"
   git_clone_repo "eosdev" "eosdev"
 
   if [ ! -f "eosdev/access.json" ]; then
@@ -107,24 +107,30 @@ main() {
     write_access_json_model "eosdev"
   fi
 
-  header "MODEL: view (root + checkpoints + fit)"
+  header "MODEL: view"
   ( cd eosdev && run "$EVC" view )
   ( cd eosdev && run "$EVC" view --path model/checkpoints )
   ( cd eosdev && run "$EVC" view --path model/fit )
 
-  header "MODEL: upload examples"
+  header "MODEL: upload (specific paths)"
   make_dummy_files_model "eosdev"
   ( cd eosdev && run "$EVC" upload --path model/checkpoints/test-run )
-  ( cd eosdev && run "$EVC" upload --path model/fit/test-fit )
+  ( cd eosdev && run "$EVC" upload --path model/fit/fit/test-fit )
   ( cd eosdev && run "$EVC" upload --path checkpoints/test-run )
   ( cd eosdev && run "$EVC" upload --path fit/test-fit )
 
-  header "MODEL: download examples"
+  header "MODEL: upload (all managed roots via --path .)"
+  ( cd eosdev && run "$EVC" upload --path . )
+
+  header "MODEL: download (specific paths)"
   ( cd eosdev && run_may_fail "$EVC" download --path model/checkpoints )
   ( cd eosdev && run_may_fail "$EVC" download --path checkpoints )
   ( cd eosdev && run_may_fail "$EVC" download --path fit )
 
-  header "2) STANDARD REPO (data/output): evc-dev-analysis (git clone, then test upload/download/view)"
+  header "MODEL: download (all managed roots via --path .)"
+  ( cd eosdev && run_may_fail "$EVC" download --path . )
+
+  header "2) STANDARD REPO: evc-dev-analysis"
   git_clone_repo "evc-dev-analysis" "evc-dev-analysis"
 
   if [ ! -f "evc-dev-analysis/access.json" ]; then
@@ -132,19 +138,25 @@ main() {
     write_access_json_standard "evc-dev-analysis"
   fi
 
-  header "STANDARD: view (root + data + output)"
+  header "STANDARD: view"
   ( cd evc-dev-analysis && run "$EVC" view )
   ( cd evc-dev-analysis && run "$EVC" view --path data )
   ( cd evc-dev-analysis && run "$EVC" view --path output )
 
-  header "STANDARD: upload examples"
+  header "STANDARD: upload (specific paths)"
   make_dummy_files_standard "evc-dev-analysis"
   ( cd evc-dev-analysis && run "$EVC" upload --path data/test )
   ( cd evc-dev-analysis && run "$EVC" upload --path output/test )
 
-  header "STANDARD: download examples (allowed to fail if nothing exists / no perms)"
+  header "STANDARD: upload (all managed roots via --path .)"
+  ( cd evc-dev-analysis && run "$EVC" upload --path . )
+
+  header "STANDARD: download (specific paths)"
   ( cd evc-dev-analysis && run_may_fail "$EVC" download --path data )
   ( cd evc-dev-analysis && run_may_fail "$EVC" download --path output )
+
+  header "STANDARD: download (all managed roots via --path .)"
+  ( cd evc-dev-analysis && run_may_fail "$EVC" download --path . )
 
   header "DONE"
   echo "All commands executed."

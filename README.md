@@ -241,14 +241,14 @@ The test script:
 
 EOSVC creates a local lock file:
 
-* `.evc/access.lock.json`
+* `.eosvc/access.lock.json`
 
 If you later change `access.json` (e.g., `public` → `private`), EOSVC will refuse to run.
 
 To override (not recommended), delete the lock file manually:
 
 ```bash
-rm .evc/access.lock.json
+rm .eosvc/access.lock.json
 ```
 
 ---

@@ -23,7 +23,7 @@ EOSVC_META_DIR = ".eosvc"
 ACCESS_LOCK_FILE = "access.lock.json"
 
 EOSVC_HOME_DIR = Path.home() / ".eosvc"
-EOSVC_HOME_ENV = EOSVC_HOME_DIR / ".env"
+EOSVC_HOME_ENV = EOSVC_HOME_DIR / ".config"
 
 
 class EOSVCError(RuntimeError):
@@ -578,7 +578,27 @@ def cmd_download(args):
   ensure_access_lock(repo_dir, policy, mode)
   repo = repo_name(repo_dir)
 
-  rel_path = normalize_user_path(args.path, mode)
+  rel_path_raw = (args.path or "").strip().lstrip("/")
+
+  if rel_path_raw in {"", ".", "./"}:
+    for rel_dir, cat in artifacts_plan(mode):
+      bucket = policy.bucket_for(cat)
+      if bucket == BUCKET_PRIVATE:
+        CREDS.resolve(repo_dir=repo_dir, require=True)
+      client = s3_for_read(bucket, repo_dir)
+      logger.info(f"Downloading --path {rel_dir} from s3://{bucket}/{repo}/")
+      try:
+        s3_download_path(client, bucket, repo, rel_dir, repo_dir)
+      except EOSVCError as e:
+        if "AccessDenied" in str(e):
+          _, source, arn = CREDS.resolve(repo_dir=repo_dir, require=False)
+          hint = f" (credentials source: {source}, principal: {arn})" if source else " (no credentials)"
+          raise EOSVCError(str(e) + hint)
+        raise
+    logger.success("Download complete.")
+    return
+
+  rel_path = normalize_user_path(rel_path_raw, mode)
   cat = category_for_path(rel_path, mode)
   bucket = policy.bucket_for(cat)
   if bucket == BUCKET_PRIVATE:
@@ -603,7 +623,27 @@ def cmd_upload(args):
   ensure_access_lock(repo_dir, policy, mode)
   repo = repo_name(repo_dir)
 
-  rel_path = normalize_user_path(args.path, mode)
+  rel_path_raw = (args.path or "").strip().lstrip("/")
+
+  if rel_path_raw in {"", ".", "./"}:
+    for rel_dir, cat in artifacts_plan(mode):
+      local_dir = repo_dir / rel_dir
+      if not local_dir.exists():
+        continue
+      bucket = policy.bucket_for(cat)
+      client = s3_for_write(bucket, repo_dir)
+      logger.info(f"Uploading --path {rel_dir} to s3://{bucket}/{repo}/")
+      try:
+        s3_upload_path(client, bucket, repo, Path(rel_dir), repo_dir)
+      except EOSVCError as e:
+        if "AccessDenied" in str(e):
+          _, source, arn = CREDS.resolve(repo_dir=repo_dir, require=False)
+          raise EOSVCError(str(e) + f" (credentials source: {source}, principal: {arn})")
+        raise
+    logger.success("Upload complete.")
+    return
+
+  rel_path = normalize_user_path(rel_path_raw, mode)
   cat = category_for_path(rel_path, mode)
   bucket = policy.bucket_for(cat)
 
