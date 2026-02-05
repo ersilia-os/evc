@@ -86,7 +86,7 @@ eosvc upload --data_path <path-to-data-to-upload>
 Download data from S3 into a local directory:
 ```bash
 eosvc download --data_path <path-to-data-to-download>
-``
+```
 
 ## Technical Details
 
