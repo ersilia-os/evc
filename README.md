@@ -9,6 +9,86 @@ EOSVC supports two repo types (detected from `access.json`):
 EOSVC **does not** manage Git operations anymore (no clone/pull/push). Use `git` directly for code workflows.
 
 ---
+## Quick Start
+### Installation
+
+Clone the repository and install the package in editable mode:
+
+```bash
+git clone https://github.com/ersilia-os/eosvc.git
+cd eosvc
+pip install -e .
+```
+
+Verify that the CLI is available:
+
+```bash
+eosvc --help
+
+```
+### AWS Credentials Setup
+
+#### 1. Create an AWS Access Key
+
+Create an access key in AWS (IAM) for a user or role with permissions to access the target S3 bucket.
+
+You will need:
+- **Access Key ID**
+- **Secret Access Key**
+- **Session Token** (only if using temporary credentials)
+- **AWS Region** (example: `eu-central-2`)
+
+#### 2. Configure EOSVC
+
+Run the following command and replace the placeholders with your credentials:
+
+```bash
+eosvc config \
+  --access-key-id "..." \
+  --secret-access-key "..." \
+  --session-token "..." \
+  --region "eu-central-2"
+```
+
+### Access Rules Configuration (`access.json`)
+
+Create or edit an `access.json` file in your working directory to define which folders are uploaded to S3 and their access level.
+
+### Example
+
+```json
+{
+  "data": "public",
+  "output": "private"
+}
+```
+- Files inside the data/ folder will be uploaded with public access.
+- Files inside the output/ folder will be uploaded with private access
+
+#### Git Ignore (Recommended)
+
+If you are working inside a git repository, prevent data folders from being committed by adding them to `.gitignore`:
+
+```gitignore
+data/
+output/
+```
+
+### Upload Data
+
+Upload data from a local directory to S3:
+```bash
+eosvc upload --data_path <path-to-data-to-upload>
+```
+
+### Download Data
+
+Download data from S3 into a local directory:
+```bash
+eosvc download --data_path <path-to-data-to-download>
+``
+
+## Technical Details
 
 ## What EOSVC stores where
 
