@@ -165,6 +165,11 @@ class CredManager:
 
   def _dotenv_paths(self, repo_dir):
     paths = []
+    if repo_dir:
+      paths.append(Path(repo_dir) / ".config" / ".env")
+      paths.append(Path(repo_dir) / ".config" / "eosvc" / ".env")
+    paths.append(Path.cwd() / ".config" / ".env")
+    paths.append(Path.cwd() / ".config" / "eosvc" / ".env")
     paths.append(EOSVC_HOME_ENV)
     if repo_dir:
       paths.append(Path(repo_dir) / ".env")
@@ -207,6 +212,26 @@ class CredManager:
 
     os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
 
+    loaded = self._load_dotenv(repo_dir)
+    if loaded:
+      session0 = boto3.Session(region_name=env_region())
+      creds0 = session0.get_credentials()
+      if creds0:
+        arn0 = self._try_sts(session0)
+        if arn0:
+          self._session = session0
+          self._source = ".env (.config first, python-dotenv)"
+          self._caller_arn = arn0
+          self._checked = True
+          return self._session, self._source, self._caller_arn
+        logger.warning(
+          "Loaded .env (.config first) but credentials failed validation (sts:GetCallerIdentity). Trying AWS default chain."
+        )
+      else:
+        logger.warning("Loaded .env (.config first) but boto3 did not resolve credentials. Trying AWS default chain.")
+    else:
+      logger.warning("No .env found in .config locations; trying AWS default chain.")
+
     session = boto3.Session(region_name=env_region())
     creds = session.get_credentials()
     if creds:
@@ -218,35 +243,15 @@ class CredManager:
         self._checked = True
         return self._session, self._source, self._caller_arn
       logger.warning(
-        "AWS credentials found (env and/or ~/.aws) but validation failed (sts:GetCallerIdentity). Trying .env fallback."
+        "AWS credentials found (env and/or ~/.aws) but validation failed (sts:GetCallerIdentity)."
       )
     else:
       if self._has_aws_files():
         logger.warning(
-          "Found ~/.aws credentials/config files but boto3 did not resolve credentials. Trying .env fallback."
+          "Found ~/.aws credentials/config files but boto3 did not resolve credentials."
         )
       else:
-        logger.warning("No AWS credentials found in env or ~/.aws. Trying .env fallback.")
-
-    loaded = self._load_dotenv(repo_dir)
-    if loaded:
-      session2 = boto3.Session(region_name=env_region())
-      creds2 = session2.get_credentials()
-      if creds2:
-        arn2 = self._try_sts(session2)
-        if arn2:
-          self._session = session2
-          self._source = ".env (python-dotenv)"
-          self._caller_arn = arn2
-          self._checked = True
-          return self._session, self._source, self._caller_arn
-        logger.warning(
-          "Loaded .env but credentials still failed validation (sts:GetCallerIdentity)."
-        )
-      else:
-        logger.warning("Loaded .env but boto3 still did not resolve credentials.")
-    else:
-      logger.warning("No .env file found for fallback.")
+        logger.warning("No AWS credentials found in env or ~/.aws.")
 
     self._session = None
     self._source = None
@@ -265,8 +270,8 @@ class CredManager:
     searched = [str(p) for p in self._dotenv_paths(repo_dir)]
     return (
       "AWS credentials are missing or invalid.\n"
-      f"- Checked: env and ~/.aws\n"
-      f"- Checked .env paths: {', '.join(searched)}\n"
+      f"- Checked .env paths (including .config first): {', '.join(searched)}\n"
+      f"- Checked: AWS default chain (env and ~/.aws)\n"
       f"- Fix: {env_hint}"
     )
 
