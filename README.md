@@ -78,14 +78,14 @@ output/
 
 Upload data from a local directory to S3:
 ```bash
-eosvc upload --data <path-to-data-to-upload>
+eosvc upload --path <path-to-data-to-upload>
 ```
 
 ### Download Data
 
 Download data from S3 into a local directory:
 ```bash
-eosvc download --data <path-to-data-to-download>
+eosvc download --path <path-to-data-to-download>
 ```
 
 ## Technical Details
